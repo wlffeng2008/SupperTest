@@ -110,6 +110,7 @@ BOOL CSupperTestDlg::OnInitDialog()
 
 	m_pPCMDataDlg->Show();
 
+	SetSpecialID(-1, IDC_CHECK_ONTOP);
 
 	return TRUE; 
 }
