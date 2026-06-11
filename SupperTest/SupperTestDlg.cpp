@@ -65,6 +65,7 @@ BEGIN_MESSAGE_MAP(CSupperTestDlg, CDialogEx)
 	ON_WM_SYSCOMMAND()
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
+	ON_WM_TIMER()
 END_MESSAGE_MAP()
 
 
@@ -174,8 +175,40 @@ BOOL CSupperTestDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 			m_pPCMDataDlg->Show(!bShow);
 			m_pPictureDlg->Show(bShow);
 		}
+		break;
+
+		case IDC_CHECK_RECORD:
+		{
+			BOOL bRecord = IsDlgButtonChecked(IDC_CHECK_RECORD);
+			KillTimer(1);
+			if (bRecord)
+			{
+				m_pPCMDataDlg->StartRecord();
+				QSetTimer(1, 1000);
+			}
+			else
+			{
+				m_pPCMDataDlg->StopRecord();
+			}
+		}
+		break;
 	default:
 		break;
 	}
 	return CDialogEx::OnCommand(wParam, lParam);	
+}
+
+void CSupperTestDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	if(nIDEvent == 1)
+	{
+		CString strInfo;
+		DWORD dwDur = m_pPCMDataDlg->m_dwDuration;
+		CString strDur;
+		strDur.Format(_T("%02d:%02d:%02d"), dwDur / 3600, (dwDur % 3600) / 60, dwDur % 60);
+		strInfo.Format(_T("%s [%.2f KB] [%s]"), m_pPCMDataDlg->m_strFile, m_pPCMDataDlg->m_dwWrite/1024.0, strDur);
+		SetDlgItemText(IDC_STATIC_INFO, strInfo);
+	}
+	
+	//CDialogEx::OnTimer(nIDEvent);
 }

@@ -34,13 +34,111 @@ BEGIN_MESSAGE_MAP(CPCMDataDlg, CDialogEx)
 	ON_WM_PAINT()
 END_MESSAGE_MAP()
 
+
+#pragma pack(push, 1)
+typedef struct 
+{
+	char RiffName[4];
+	unsigned long nRiffLength;
+	char WavName[4];
+	char FmtName[4];
+	unsigned long nFmtLength;
+	unsigned short nAudioFormat;
+	unsigned short nChannleNumber;
+	unsigned long nSampleRate;
+	unsigned long nBytesPerSecond;
+	unsigned short nBytesPerSample;
+	unsigned short nBitsPerSample;
+	char    DATANAME[4];
+	unsigned long   nDataLength;
+}WAVFILEHEADER;
+#pragma pack(pop)
+
+static WAVFILEHEADER WavFileHeader;
+
+void CPCMDataDlg::StartRecord()
+{
+	if (m_bRecording)
+		return;
+
+	CString strFile = ::GetCurrentPath() + ::FormatTM(0, 1) + _T(".wav");
+	if (m_RecFile.Open(strFile, CFile::modeCreate | CFile::modeWrite))
+	{
+		m_RecFile.Write(&WavFileHeader, sizeof(WAVFILEHEADER));
+		m_dwWrite = 0;
+		m_strFile = strFile;
+		m_bRecording = TRUE;
+		m_dwStartTick = GetTickCount64();
+	}
+}
+
+void CPCMDataDlg::StopRecord()
+{
+	m_bRecording = FALSE;
+}
+
 void CPCMDataDlg::DrawCurv(const float* data, int nCount)
 {
+	if (m_bRecording)
+	{
+		int nDataLen = nCount * 4 * 2;
+
+		PCMData* pData = new PCMData;
+		pData->data = new BYTE[nDataLen];
+		memcpy(pData->data, data, nDataLen);
+		pData->len = nDataLen;
+		m_lstData.AddTail(pData);
+
+		m_dwDuration = (GetTickCount64() - m_dwStartTick)/1000;
+	}
+
 	for (int i = 0; i < 960; i++)
 	{
 		m_data[i] = data[i];
 	}
 	RedrawWindow();
+}
+
+int CPCMDataDlg::OnSimpleThreadLoopRun(int nWorkerID)
+{
+	while (true)
+	{
+		Sleep(10);
+		if(!m_bRecording)
+			continue;
+
+		while (true)
+		{
+			if(m_lstData.GetCount() == 0)
+				break;
+			PCMData* pData = m_lstData.RemoveHead();
+			if(!pData) break;
+			m_RecFile.SeekToEnd();
+			m_RecFile.Write(pData->data, pData->len);
+			m_dwWrite += pData->len;
+			delete[] pData->data;
+			delete pData;
+
+			WavFileHeader.nRiffLength = m_dwWrite + 36;
+			WavFileHeader.nDataLength = m_dwWrite;
+			m_RecFile.SeekToBegin();
+			m_RecFile.Write(&WavFileHeader, sizeof(WAVFILEHEADER));
+		}
+
+		if (!m_bRecording)
+		{
+			m_RecFile.Flush();
+			WavFileHeader.nRiffLength = m_dwWrite + 36;
+			WavFileHeader.nDataLength = m_dwWrite;
+
+			m_RecFile.SeekToBegin();
+			m_RecFile.Write(&WavFileHeader, sizeof(WAVFILEHEADER));
+			m_RecFile.Close();
+			m_strFile = _T("");
+			MessageBox(_T("Stop Recording"));
+		}
+	}
+	return 0;
 }
 
 void CPCMDataDlg::OnPaint()
@@ -105,7 +203,7 @@ static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput,
 	ma_uint32 dataSize = frameCount * pDevice->playback.channels * sizeof(float);
 	//TRACE(_T("--------%s %d,%d,%d,%d,%d,%d,%d,%d,%d\n"), CA2W((pDevice->playback.name)), dataSize, (int)(pcmDataO[2] * 6), (int)(pcmDataO[25] * 6), (int)(pcmDataO[49] * 6), (int)(pcmDataO[83] * 6),
 	//	(int)(pcmDataO[360] * 6), (int)(pcmDataO[400] * 6), (int)(pcmDataO[430] * 6), (int)(pcmDataO[470] * 6));
-	if (pWDlg) pWDlg->DrawCurv(pcmDataO);
+	if (pWDlg) pWDlg->DrawCurv(pcmDataO, frameCount);
 }
 
 // CSubDlgWorkinfo message handlers
@@ -132,11 +230,27 @@ BOOL CPCMDataDlg::OnInitDialog()
 	if (ma_device_start(&device) != MA_SUCCESS) {
 		ma_device_uninit(&device);
 	}*/ 
+
+	memcpy(WavFileHeader.RiffName, "RIFF", 4);
+	memcpy(WavFileHeader.WavName, "WAVE", 4);
+	memcpy(WavFileHeader.FmtName, "fmt ", 4);
+	memcpy(WavFileHeader.DATANAME, "data", 4);
+
+	WavFileHeader.nFmtLength = 16;
+	WavFileHeader.nAudioFormat = 3;        // 3 = IEEE 浮点（对应 ma_format_f32）
+	WavFileHeader.nChannleNumber = 2;
+	WavFileHeader.nSampleRate = 48000;
+	WavFileHeader.nBitsPerSample = 32;       // 浮点32位
+	WavFileHeader.nBytesPerSample = (32 / 8) * 2;  // 4*2=8
+	WavFileHeader.nBytesPerSecond = 48000 * 2 * 4;  // 384000
+
 	static ma_device_config config = ma_device_config_init(ma_device_type_loopback);
 	config.playback.format = ma_format_f32;
 	config.playback.channels = 2;         // 声道数：立体声
 	config.sampleRate = 48000;            // Set to 0 to use the device's native sample rate.
 	config.dataCallback = data_callback;  // This function will be called when miniaudio needs more data.
+	config.periodSizeInFrames = 480;     // 稳定值
+	config.periods = 4;       // 缓冲区变大，抗卡顿
 	config.pUserData = this;   // Can be accessed from the device object (device.pUserData).
 	//config.capture.channels;
 
@@ -147,6 +261,6 @@ BOOL CPCMDataDlg::OnInitDialog()
 	}
 
 	ma_device_start(&device);     // The device is sleeping by default so you'll need to start it manually.
-
+	StartThread(0);
 	return TRUE;
 }
