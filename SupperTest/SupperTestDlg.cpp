@@ -113,6 +113,19 @@ BOOL CSupperTestDlg::OnInitDialog()
 
 	SetSpecialID(-1, IDC_CHECK_ONTOP);
 
+	RAWINPUTDEVICE rid[1];
+	rid[0].usUsagePage = 0x01;  // 通用桌面设备 (Generic Desktop Controls)
+	rid[0].usUsage = 0x02;      // 鼠标设备 (Mouse)
+	rid[0].dwFlags = RIDEV_INPUTSINK; // 允许在窗口失去焦点时也能接收数据
+	rid[0].hwndTarget = m_hWnd;   // 接收消息的窗口句柄
+
+	if (!RegisterRawInputDevices(rid, 1, sizeof(rid))) {
+		// 注册失败处理
+		MessageBox(L"注册原始输入设备失败！", L"错误", MB_OK);
+		return FALSE;
+	}
+
+	QSetTimer(2, 300);
 	return TRUE; 
 }
 
@@ -198,17 +211,116 @@ BOOL CSupperTestDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 	return CDialogEx::OnCommand(wParam, lParam);	
 }
 
+
+#include <vector>
+#include <numeric> // 用于 std::accumulate
+
+
+class PollingRateCalculator {
+private:
+	LARGE_INTEGER m_frequency; // 高精度计时器频率
+	LARGE_INTEGER m_startTime; // 当前时间窗口的起始时间
+	int m_packetCount;         // 当前窗口内收到的数据包数量
+	double m_currentPollingRate; // 计算出的回报率 (Hz)
+	double m_windowDurationMs; // 时间窗口长度（毫秒），通常设为 1000ms
+
+public:
+	PollingRateCalculator(double windowMs = 1000.0)
+		: m_packetCount(0), m_currentPollingRate(0.0), m_windowDurationMs(windowMs)
+	{
+		QueryPerformanceFrequency(&m_frequency);
+		QueryPerformanceCounter(&m_startTime);
+	}
+
+	// 核心方法：每次收到 Raw Input 时调用
+	void ProcessMousePacket() {
+		m_packetCount++;
+
+		LARGE_INTEGER currentTime;
+		QueryPerformanceCounter(&currentTime);
+
+		// 计算距离窗口开始经过的时间（毫秒）
+		double elapsedMs = (double)(currentTime.QuadPart - m_startTime.QuadPart) * 1000.0 / m_frequency.QuadPart;
+
+		// 如果经过的时间达到了设定的窗口（例如1000ms），则计算回报率并重置
+		if (elapsedMs >= m_windowDurationMs) {
+			// 回报率 = 总包数 / 实际经过的秒数
+			m_currentPollingRate = (double)m_packetCount / (elapsedMs / 1000.0);
+
+			// 重置计数器，开始下一个窗口
+			m_packetCount = 0;
+			m_startTime = currentTime;
+		}
+	}
+
+	// 获取当前计算出的回报率
+	double GetPollingRate() const {
+		return m_currentPollingRate;
+	}
+};
+
+// 全局或类成员变量
+PollingRateCalculator g_pollingCalc(1000.0); // 1000毫秒为一个计算周期
+LRESULT CSupperTestDlg::WindowProc(UINT message, WPARAM wParam, LPARAM lParam)
+{
+	switch (message)
+	{
+		case WM_INPUT:
+		{
+			UINT dwSize = 0;
+			// 1. 获取所需缓冲区大小
+			GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &dwSize, sizeof(RAWINPUTHEADER));
+
+			// 2. 分配缓冲区并获取实际数据
+			LPBYTE lpb = new BYTE[dwSize];
+			if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, lpb, &dwSize, sizeof(RAWINPUTHEADER)) != dwSize) {
+				delete[] lpb;
+				break;
+			}
+
+			RAWINPUT* raw = (RAWINPUT*)lpb;
+
+			// 3. 确认是鼠标输入
+			if (raw->header.dwType == RIM_TYPEMOUSE) {
+				RAWMOUSE& mouse = raw->data.mouse;
+
+				// 获取相对移动距离 (lLastX, lLastY)
+				int relativeX = mouse.lLastX;
+				int relativeY = mouse.lLastY;
+
+				// 【核心逻辑】在此处记录高精度时间戳 (如 QueryPerformanceCounter)
+				// 通过统计单位时间（如1秒）内接收到的有效数据包数量，即可得出回报率(Hz)
+				// ProcessRawMouseData(relativeX, relativeY);
+				g_pollingCalc.ProcessMousePacket();
+			}
+
+			delete[] lpb;
+		}
+	}
+
+	return CDialogEx::WindowProc(message, wParam, lParam);
+}
+
+
+
 void CSupperTestDlg::OnTimer(UINT_PTR nIDEvent)
 {
-	if(nIDEvent == 1)
+	if (nIDEvent == 1)
 	{
 		CString strInfo;
 		DWORD dwDur = m_pPCMDataDlg->m_dwDuration;
 		CString strDur;
 		strDur.Format(_T("%02d:%02d:%02d"), dwDur / 3600, (dwDur % 3600) / 60, dwDur % 60);
-		strInfo.Format(_T("%s [%.2f KB] [%s]"), m_pPCMDataDlg->m_strFile, m_pPCMDataDlg->m_dwWrite/1024.0, strDur);
+		strInfo.Format(_T("%s [%.2f KB] [%s]"), m_pPCMDataDlg->m_strFile, m_pPCMDataDlg->m_dwWrite / 1024.0, strDur);
 		SetDlgItemText(IDC_STATIC_INFO, strInfo);
 	}
-	
+
+	if (nIDEvent == 2)
+	{
+		CString strInfo;
+		double rate = g_pollingCalc.GetPollingRate();
+		strInfo.Format(_T("Polling Rate: %.2f"), rate);
+		SetDlgItemText(IDC_STATIC_RATE, strInfo);
+	}
 	//CDialogEx::OnTimer(nIDEvent);
 }

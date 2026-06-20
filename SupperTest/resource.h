@@ -16,8 +16,9 @@
 #define IDC_CHECK2                      1002
 #define IDC_CHECK_ONTOP                 1002
 #define IDC_CHECK_RECORD                1003
-#define IDC_CHECK_TOP                   1004
 #define IDC_STATIC_INFO                 1005
+#define IDC_STATIC_INFO2                1006
+#define IDC_STATIC_RATE                 1006
 
 // Next default values for new objects
 // 
